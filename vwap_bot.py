@@ -3,6 +3,7 @@ from discord.ext import commands, tasks
 import requests
 from dotenv import load_dotenv
 import os
+import json
 from datetime import datetime, timezone, timedelta
 
 # Load environment variables from .env file
@@ -18,6 +19,27 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Dictionary to store coin alerts with contract addresses and VWAP levels
 price_alerts = {}
+
+# File to store alerts
+ALERTS_FILE = 'alerts.json'
+
+def save_alerts():
+    """Saves the current alerts to a JSON file."""
+    with open(ALERTS_FILE, 'w') as f:
+        json.dump(price_alerts, f, default=str)  # Use default=str to handle datetime serialization
+
+def load_alerts():
+    """Loads alerts from a JSON file."""
+    global price_alerts
+    try:
+        with open(ALERTS_FILE, 'r') as f:
+            price_alerts = json.load(f)
+            # Convert string timestamps back to datetime objects
+            for alert in price_alerts.values():
+                if alert['last_alert_time']:
+                    alert['last_alert_time'] = datetime.fromisoformat(alert['last_alert_time'])
+    except FileNotFoundError:
+        price_alerts = {}
 
 @bot.command()
 async def vwap(ctx, contract_address: str, vwap_level: float):
@@ -76,6 +98,7 @@ async def vwap(ctx, contract_address: str, vwap_level: float):
             'profile_pic': ctx.author.display_avatar.url,
             'last_alert_time': None  # To track the last alert time for 24-hour restriction
         }
+        save_alerts()  # Save alerts after adding a new one
         alert_msg = f"Alert set: Notify when price is within ±10% of VWAP level ${vwap_level}"
         embed.add_field(name="📌 Alert", value=alert_msg, inline=False)
         
@@ -120,6 +143,7 @@ async def monitor_prices():
                 if last_alert_time is None or (datetime.now(timezone.utc) - last_alert_time) >= timedelta(days=1):
                     # Update last alert time
                     alert_data['last_alert_time'] = datetime.now(timezone.utc)
+                    save_alerts()  # Save alerts after updating the last alert time
                     await send_alert_message(
                         f"{ticker} is near the VWAP!\n\nCurrent price: ${current_price:.2f} ({percentage_difference:+.2f}%)",
                         alert_data['user'],
@@ -168,6 +192,7 @@ async def remove_token(ctx, contract_address: str):
     contract_address = contract_address.lower()
     if contract_address in price_alerts:
         del price_alerts[contract_address]
+        save_alerts()  # Save alerts after removing one
         await ctx.send(f"Alert for contract {contract_address} has been removed.")
     else:
         await ctx.send(f"No alert found for contract {contract_address}.")
@@ -213,9 +238,10 @@ def fetch_token_pairs(contract_address):
 @bot.event
 async def on_ready():
     """
-    Called when the bot is ready. Starts the price-monitoring loop.
+    Called when the bot is ready. Starts the price-monitoring loop and loads saved alerts.
     """
     print(f"Bot is online as {bot.user}")
+    load_alerts()  # Load alerts from file
     if not monitor_prices.is_running():
         monitor_prices.start()
         print("Price monitoring has started")
